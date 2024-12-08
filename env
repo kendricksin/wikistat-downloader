@@ -1,0 +1,26 @@
+# Database settings
+DB_HOST=
+DB_USER=
+DB_PASSWORD=
+DB_TIMEOUT=
+
+# Email settings
+EMAIL_SENDER=
+EMAIL_APP_PASSWORD=
+EMAIL_RECIPIENT=
+SMTP_SERVER=
+SMTP_PORT=
+
+# Worker settings
+MAX_DOWNLOAD_WORKERS=4
+MAX_IMPORT_WORKERS=28
+BATCH_SIZE=1000
+DOWNLOAD_RETRY_DELAY=900
+
+# Data directory settings
+DATA_DIR=wikistat_data
+LOG_FILE=wikistat_import.log
+
+# Dataset settings
+START_YEAR=2015
+START_MONTH=5
