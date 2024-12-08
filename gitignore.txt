@@ -1,0 +1,4 @@
+__pycache__/
+wikistat_data/
+wikistat_import.log
+.env
