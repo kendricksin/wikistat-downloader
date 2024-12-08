@@ -1,0 +1,14 @@
+# Core libraries
+python-dotenv==1.0.0  # For loading environment variables
+requests==2.31.0      # For HTTP requests
+beautifulsoup4==4.12.2  # For parsing HTML directory listings
+pymysql==1.1.0        # For MySQL database connectivity
+psutil==5.9.7         # For system resource monitoring
+
+# Utility libraries
+backoff==2.2.1        # For retry logic with exponential backoff
+lxml==4.9.3           # Fast HTML parser for BeautifulSoup
+
+# Development and logging
+colorama==0.4.6       # For colored terminal output in Windows
+python-dateutil==2.8.2  # For date handling
