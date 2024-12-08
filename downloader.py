@@ -68,6 +68,40 @@ class Downloader:
         
         self._last_download_time = time.time()
 
+    def _get_file_list(self, year, month):
+        """Get list of files for a specific year-month"""
+        url = f"https://dumps.wikimedia.org/other/pageviews/{year}/{year}-{month:02d}/"
+        try:
+            response = self.session.get(url, timeout=30)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            files = []
+            
+            for link in soup.find_all('a'):
+                href = link.get('href', '')
+                # Only process files that match our expected pattern
+                if match := self.filename_pattern.match(href):
+                    year, month, day, hour = match.groups()
+                    files.append((int(year), int(month), int(day), int(hour)))
+            
+            return sorted(files, reverse=True)  # Sort in reverse order
+        except Exception as e:
+            self.logger.error(f"Error fetching file list for {year}-{month}: {e}")
+            return []
+
+    def _parse_filename(self, filename):
+        """Parse filename and return components or None if invalid"""
+        try:
+            match = self.filename_pattern.match(filename)
+            if not match:
+                return None
+            
+            year, month, day, hour = match.groups()
+            return (int(year), int(month), int(day), int(hour))
+        except (ValueError, AttributeError) as e:
+            self.logger.warning(f"Invalid filename format: {filename}, Error: {e}")
+            return None
+
     @backoff.on_exception(
         backoff.expo,
         (requests.exceptions.RequestException, IOError),
@@ -125,3 +159,25 @@ class Downloader:
             if file_path.exists():
                 file_path.unlink()  # Remove partial downloads
             raise
+
+    def generate_download_tasks(self):
+        """Generate download tasks for all files in reverse chronological order"""
+        current_date = datetime.now()
+        tasks = []
+        
+        # Start from current year/month and go backwards
+        for year in range(current_date.year, Config.START_YEAR - 1, -1):
+            start_month = 12
+            end_month = 1
+            
+            if year == current_date.year:
+                start_month = current_date.month
+            if year == Config.START_YEAR:
+                end_month = Config.START_MONTH
+                
+            for month in range(start_month, end_month - 1, -1):
+                self.logger.info(f"Scanning directory for {year}-{month:02d}")
+                tasks.extend(self._get_file_list(year, month))
+        
+        self.logger.info(f"Found {len(tasks)} valid download tasks")
+        return tasks
