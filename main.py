@@ -12,6 +12,7 @@ from processor import DataProcessor
 from notifier import EmailNotifier
 from state_manager import StateManager
 from monitor import WorkerMonitor
+from email_batch_manager import EmailBatchManager
 
 def setup_logging():
     logging.basicConfig(
@@ -29,6 +30,11 @@ class WikistatImporter:
         # Initialize logger first
         self.logger = logging.getLogger(__name__)
         
+        # Initialize counters first
+        self._processed_count = 0
+        self._total_datasets = 0
+        self._lock = threading.Lock()
+        
         # Initialize components
         self.db_manager = DatabaseManager()
         self.downloader = Downloader()
@@ -36,16 +42,15 @@ class WikistatImporter:
         self.notifier = EmailNotifier()
         self.state_manager = StateManager()
         self.worker_monitor = WorkerMonitor()
+        self.email_batch_manager = EmailBatchManager(self.notifier)
         
         # Initialize queues
         self.download_queue = queue.Queue()
         self.import_queue = queue.Queue()
         self.failed_downloads, self.successful_imports = self.state_manager.load_state()
         
-        # Initialize counters
-        self._processed_count = 0
-        self._total_datasets = 0
-        self._lock = threading.Lock()
+        # Now set the total_datasets after initialization
+        self.email_batch_manager.total_datasets = self._total_datasets
 
     def _generate_dataset_list(self):
         current_date = datetime.now()
@@ -162,21 +167,15 @@ class WikistatImporter:
                                 self.successful_imports
                             )
                         
-                        self.notifier.send_notification(
-                            f"WikiStat Import: {year}-{month:02d}-{day:02d} Hour {hour:02d} Completed",
-                            f"""
-                            Dataset: {year}-{month:02d}-{day:02d} Hour {hour:02d}
-                            Rows imported: {rows_imported:,}
-                            Datasets processed: {self._processed_count}/{self._total_datasets}
-                            Datasets remaining: {self._total_datasets - self._processed_count}
-                            Failed downloads: {len(self.failed_downloads)}
-                            """
+                        self.email_batch_manager.add_to_batch(
+                            (year, month, day, hour),
+                            rows_imported
                         )
                     
                 except Exception as e:
                     self.logger.error(f"Error in import worker: {e}", exc_info=True)
                     with self._lock:
-                        if dataset:  # Only add to failed_downloads if we have a valid dataset
+                        if dataset:
                             year, month, day, hour, _ = dataset
                             self.failed_downloads.add((year, month, day, hour))
                             self.state_manager.save_state(
@@ -273,6 +272,7 @@ class WikistatImporter:
             # Generate download tasks
             tasks = self.downloader.generate_download_tasks()
             self._total_datasets = len(tasks)
+            self.email_batch_manager.total_datasets = self._total_datasets
             self.logger.info(f"Found {self._total_datasets} datasets to process")
             
             # Start the worker monitor BEFORE processing begins
