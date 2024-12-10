@@ -48,10 +48,51 @@ class WikistatImporter:
         self.download_queue = queue.Queue()
         self.import_queue = queue.Queue()
         self.failed_downloads, self.successful_imports = self.state_manager.load_state()
+
+        # Add separate events for process control
+        self.download_complete = threading.Event()
+        self.import_complete = threading.Event()
         
         # Now set the total_datasets after initialization
         self.email_batch_manager.total_datasets = self._total_datasets
+        self.pending_imports = set()
 
+    def _initialize_tasks(self):
+        """Initialize tasks based on what process is active"""
+        tasks = []
+        
+        if Config.MAX_DOWNLOAD_WORKERS > 0:
+            # Generate download tasks only if downloading is enabled
+            tasks = self.downloader.generate_download_tasks()
+            self._total_datasets = len(tasks)
+            self.email_batch_manager.total_datasets = self._total_datasets
+            self.logger.info(f"Found {self._total_datasets} datasets to download")
+            
+            # Queue download tasks
+            for task in tasks:
+                if task not in self.successful_imports:
+                    self.download_queue.put(task)
+        
+        elif Config.MAX_IMPORT_WORKERS > 0:
+            # If only importing, scan the data directory for files to import
+            self.logger.info("Scanning data directory for files to import...")
+            for file_path in Config.DATA_DIR.glob('pageviews-*.gz'):
+                try:
+                    # Parse filename to get components
+                    match = self.downloader.filename_pattern.match(file_path.name)
+                    if match:
+                        year, month, day, hour = map(int, match.groups())
+                        if (year, month, day, hour) not in self.successful_imports:
+                            self.import_queue.put((year, month, day, hour, file_path))
+                            self.pending_imports.add((year, month, day, hour))
+                except Exception as e:
+                    self.logger.error(f"Error parsing filename {file_path}: {e}")
+            
+            self._total_datasets = len(self.pending_imports)
+            self.email_batch_manager.total_datasets = self._total_datasets
+            self.logger.info(f"Found {self._total_datasets} datasets to import")
+
+        return tasks
     def _generate_dataset_list(self):
         current_date = datetime.now()
         datasets = []
@@ -68,6 +109,78 @@ class WikistatImporter:
         
         return datasets
 
+    def _download_manager(self, datasets):
+        """Manage the download process"""
+        try:
+            if Config.MAX_DOWNLOAD_WORKERS > 0:
+                # Start download workers
+                download_threads = []
+                for i in range(Config.MAX_DOWNLOAD_WORKERS):
+                    t = threading.Thread(target=self._download_worker)
+                    t.daemon = True
+                    t.start()
+                    download_threads.append(t)
+                
+                # Add datasets to download queue
+                for dataset in datasets:
+                    self.download_queue.put(dataset)
+                
+                # Add poison pills for download workers
+                for _ in range(Config.MAX_DOWNLOAD_WORKERS):
+                    self.download_queue.put(None)
+                
+                # Wait for downloads to complete
+                self.download_queue.join()
+                
+                # Wait for all download threads to finish
+                for t in download_threads:
+                    t.join()
+            
+            # Signal that downloading is complete
+            self.download_complete.set()
+            
+        except Exception as e:
+            self.logger.error(f"Error in download manager: {e}", exc_info=True)
+            # Ensure import process knows downloading failed
+            self.download_complete.set()
+            raise
+
+    def _import_manager(self):
+        """Manage the import process"""
+        try:
+            if Config.MAX_IMPORT_WORKERS > 0:
+                # Start import workers
+                import_threads = []
+                for i in range(Config.MAX_IMPORT_WORKERS):
+                    t = threading.Thread(target=self._import_worker)
+                    t.daemon = True
+                    t.start()
+                    import_threads.append(t)
+                
+                # Wait until either:
+                # 1. All downloads are complete and import queue is empty
+                # 2. Or downloading failed and import queue is empty
+                while not self.download_complete.is_set() or not self.import_queue.empty():
+                    time.sleep(1)
+                
+                # Add poison pills for import workers
+                for _ in range(Config.MAX_IMPORT_WORKERS):
+                    self.import_queue.put(None)
+                
+                # Wait for imports to complete
+                self.import_queue.join()
+                
+                # Wait for all import threads to finish
+                for t in import_threads:
+                    t.join()
+            
+            # Signal that importing is complete
+            self.import_complete.set()
+            
+        except Exception as e:
+            self.logger.error(f"Error in import manager: {e}", exc_info=True)
+            self.import_complete.set()
+            raise
     def _download_worker(self):
             """Worker function for downloading datasets"""
             while True:
@@ -78,13 +191,6 @@ class WikistatImporter:
                         break
                     
                     year, month, day, hour = task
-                    
-                    # Double check task hasn't been completed while in queue
-                    if tuple(task) in self.successful_imports:
-                        self.logger.debug(f"Skipping already completed task: {year}-{month:02d}-{day:02d} hour {hour:02d}")
-                        self.download_queue.task_done()
-                        continue
-                    
                     self.logger.info(f"Downloading dataset {year}-{month:02d}-{day:02d} hour {hour:02d}")
                     
                     file_path = self.downloader.download_file(year, month, day, hour)
@@ -199,68 +305,43 @@ class WikistatImporter:
                 connection.close()
 
     def _process_datasets(self, datasets):
-        """Main processing loop"""
+        """Main processing loop with independent download and import processes"""
         try:
-            while datasets or self.failed_downloads:
-                self.logger.info("Starting processing cycle")
-                
-                # Start download workers
-                download_threads = []
-                for i in range(Config.MAX_DOWNLOAD_WORKERS):
-                    t = threading.Thread(target=self._download_worker)
-                    t.daemon = True
-                    t.start()
-                    download_threads.append(t)
-                
-                # Start import workers
-                import_threads = []
-                for i in range(Config.MAX_IMPORT_WORKERS):
-                    t = threading.Thread(target=self._import_worker)
-                    t.daemon = True
-                    t.start()
-                    import_threads.append(t)
-                
-                self.logger.info(f"Adding {len(datasets)} datasets to download queue")
-                # Add datasets to download queue
-                for dataset in datasets:
-                    self.download_queue.put(dataset)
-                
-                # Add poison pills for download workers
-                for _ in range(Config.MAX_DOWNLOAD_WORKERS):
-                    self.download_queue.put((None, None, None))
-                
-                # Wait for downloads to complete
-                self.download_queue.join()
-                self.logger.info("All downloads completed")
-                
-                # Add poison pills for import workers
-                for _ in range(Config.MAX_IMPORT_WORKERS):
-                    self.import_queue.put(None)
-                
-                # Wait for imports to complete
-                self.import_queue.join()
-                self.logger.info("All imports completed")
-                
-                # Wait for all threads to finish
-                for t in download_threads + import_threads:
-                    t.join()
-                
-                # Update datasets list with any remaining failed downloads
-                datasets = list(self.failed_downloads)
-                self.failed_downloads.clear()
-                
-                if datasets:
-                    self.logger.info(f"Retrying {len(datasets)} failed datasets after a short delay")
-                    time.sleep(300)  # 5 minute delay before retrying
+            # Reset events
+            self.download_complete.clear()
+            self.import_complete.clear()
             
-            # Send completion notification
-            self.notifier.send_notification(
-                "WikiStat Import: All Datasets Completed",
-                f"""
-                Successfully processed {self._processed_count} datasets.
-                Failed downloads remaining: {len(self.failed_downloads)}
-                """
-            )
+            # Start download manager in a separate thread if we have download workers
+            if Config.MAX_DOWNLOAD_WORKERS > 0:
+                download_thread = threading.Thread(
+                    target=self._download_manager,
+                    args=(datasets,)
+                )
+                download_thread.start()
+            else:
+                # If no download workers, mark downloads as complete immediately
+                self.download_complete.set()
+            
+            # Start import manager in a separate thread if we have import workers
+            if Config.MAX_IMPORT_WORKERS > 0:
+                import_thread = threading.Thread(
+                    target=self._import_manager
+                )
+                import_thread.start()
+            else:
+                # If no import workers, mark imports as complete immediately
+                self.import_complete.set()
+            
+            # Wait for both processes to complete
+            self.download_complete.wait()
+            self.import_complete.wait()
+            
+            # Check if any datasets need to be retried
+            retry_datasets = list(self.failed_downloads)
+            if retry_datasets:
+                self.logger.info(f"Retrying {len(retry_datasets)} failed datasets after delay")
+                time.sleep(Config.DOWNLOAD_RETRY_DELAY)
+                self._process_datasets(retry_datasets)
             
         except Exception as e:
             self.logger.error(f"Error in processing loop: {e}", exc_info=True)
@@ -276,33 +357,15 @@ class WikistatImporter:
             self.db_manager.create_schema(connection)
             connection.close()
 
-            # Generate download tasks
-            all_tasks = self.downloader.generate_download_tasks()
-            pending_tasks = [
-                task for task in all_tasks 
-                if tuple(task) not in self.successful_imports
-            ] # Filter out already completed tasks
-    
-            self._total_datasets = len(all_tasks)  # Use all_tasks here
-            self.email_batch_manager.total_datasets = self._total_datasets
-            remaining_datasets = len(pending_tasks)
-            completed_datasets = len(self.successful_imports)
-            
-            self.logger.info(
-                f"Found {self._total_datasets} total datasets\n"
-                f"Already completed: {completed_datasets}\n"
-                f"Remaining to process: {remaining_datasets}"
-            )
             # Start the worker monitor BEFORE processing begins
             self.worker_monitor.start()
             
             try:
-                # Add only pending tasks to the download queue
-                for task in pending_tasks:
-                    self.download_queue.put(task)
+                # Initialize tasks based on active processes
+                tasks = self._initialize_tasks()
                 
-                # Start processing
-                self._process_datasets(pending_tasks)
+                # Start processing with whatever tasks were initialized
+                self._process_datasets(tasks)
             finally:
                 # Ensure monitor is stopped even if processing fails
                 self.worker_monitor.stop()
