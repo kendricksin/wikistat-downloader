@@ -81,10 +81,9 @@ class Downloader:
                 href = link.get('href', '')
                 # Only process files that match our expected pattern
                 if match := self.filename_pattern.match(href):
-                    year, month, day, hour = match.groups()
-                    files.append((int(year), int(month), int(day), int(hour)))
+                    files.append(href)  # Store the filename string instead of parsed components
             
-            return sorted(files, reverse=True)  # Sort in reverse order
+            return sorted(files)  # Return sorted filenames
         except Exception as e:
             self.logger.error(f"Error fetching file list for {year}-{month}: {e}")
             return []
@@ -180,13 +179,11 @@ class Downloader:
                 files = self._get_file_list(year, month)
                 
                 for filename in files:
-                    components = self._parse_filename(filename)
-                    if components:
+                    if components := self._parse_filename(filename):
                         tasks.append(components)
                     else:
                         self.logger.warning(f"Skipping invalid filename: {filename}")
         
-        # Sort tasks by date (newest first)
-        tasks.sort(reverse=True)
+        tasks.sort(reverse=True)  # Sort by date (newest first)
         self.logger.info(f"Found {len(tasks)} total possible tasks")
         return tasks
