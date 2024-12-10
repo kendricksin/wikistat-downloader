@@ -78,6 +78,13 @@ class WikistatImporter:
                         break
                     
                     year, month, day, hour = task
+                    
+                    # Double check task hasn't been completed while in queue
+                    if tuple(task) in self.successful_imports:
+                        self.logger.debug(f"Skipping already completed task: {year}-{month:02d}-{day:02d} hour {hour:02d}")
+                        self.download_queue.task_done()
+                        continue
+                    
                     self.logger.info(f"Downloading dataset {year}-{month:02d}-{day:02d} hour {hour:02d}")
                     
                     file_path = self.downloader.download_file(year, month, day, hour)
@@ -271,21 +278,32 @@ class WikistatImporter:
 
             # Generate download tasks
             tasks = self.downloader.generate_download_tasks()
+            pending_tasks = [
+                task for task in all_tasks 
+                if tuple(task) not in self.successful_imports
+            ] # Filter out already completed tasks
+
             self._total_datasets = len(tasks)
             self.email_batch_manager.total_datasets = self._total_datasets
-            self.logger.info(f"Found {self._total_datasets} datasets to process")
+            remaining_datasets = len(pending_tasks)
+            completed_datasets = len(self.successful_imports)
+            
+            self.logger.info(
+                f"Found {self._total_datasets} total datasets\n"
+                f"Already completed: {completed_datasets}\n"
+                f"Remaining to process: {remaining_datasets}"
+            )
             
             # Start the worker monitor BEFORE processing begins
             self.worker_monitor.start()
             
             try:
-                # Add all tasks to the download queue
-                for task in tasks:
-                    if task not in self.successful_imports:
-                        self.download_queue.put(task)
+                # Add only pending tasks to the download queue
+                for task in pending_tasks:
+                    self.download_queue.put(task)
                 
                 # Start processing
-                self._process_datasets(tasks)
+                self._process_datasets(pending_tasks)
             finally:
                 # Ensure monitor is stopped even if processing fails
                 self.worker_monitor.stop()
