@@ -277,13 +277,13 @@ class WikistatImporter:
             connection.close()
 
             # Generate download tasks
-            tasks = self.downloader.generate_download_tasks()
+            all_tasks = self.downloader.generate_download_tasks()
             pending_tasks = [
                 task for task in all_tasks 
                 if tuple(task) not in self.successful_imports
             ] # Filter out already completed tasks
-
-            self._total_datasets = len(tasks)
+    
+            self._total_datasets = len(all_tasks)  # Use all_tasks here
             self.email_batch_manager.total_datasets = self._total_datasets
             remaining_datasets = len(pending_tasks)
             completed_datasets = len(self.successful_imports)
@@ -293,7 +293,6 @@ class WikistatImporter:
                 f"Already completed: {completed_datasets}\n"
                 f"Remaining to process: {remaining_datasets}"
             )
-            
             # Start the worker monitor BEFORE processing begins
             self.worker_monitor.start()
             
