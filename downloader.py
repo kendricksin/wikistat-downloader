@@ -161,7 +161,7 @@ class Downloader:
             raise
 
     def generate_download_tasks(self):
-        """Generate download tasks for all files in reverse chronological order"""
+        """Generate download tasks in reverse chronological order"""
         current_date = datetime.now()
         tasks = []
         
@@ -177,7 +177,16 @@ class Downloader:
                 
             for month in range(start_month, end_month - 1, -1):
                 self.logger.info(f"Scanning directory for {year}-{month:02d}")
-                tasks.extend(self._get_file_list(year, month))
+                files = self._get_file_list(year, month)
+                
+                for filename in files:
+                    components = self._parse_filename(filename)
+                    if components:
+                        tasks.append(components)
+                    else:
+                        self.logger.warning(f"Skipping invalid filename: {filename}")
         
-        self.logger.info(f"Found {len(tasks)} valid download tasks")
+        # Sort tasks by date (newest first)
+        tasks.sort(reverse=True)
+        self.logger.info(f"Found {len(tasks)} total possible tasks")
         return tasks
