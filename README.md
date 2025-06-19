@@ -22,10 +22,10 @@ This is sort of a client request to find out if different database engines had d
 ## Questions:
 
  1. Why not just download the files one by one?
-  There are about 85,000 files each containing up to 9 million rows (about 50mb) - this would take 3 days according to ClickHouse
+  There are about 85,000 files each containing up to 9 million rows (about 50mb) - this would take 3 days according to ClickHouse.
 
  2. Why are you using mysql?
-  Its not exactly mysql, I am uploading the dataset to an enhanced version of mysql developed by Alibaba Cloud known as AnalyticDB for mysql - it is designed as a lakehouse with similar performance to ClickHouse (that means you can use a single database for your datawarehouse architecture)
+  Its not exactly mysql, I am uploading the dataset to an enhanced version of mysql developed by Alibaba Cloud known as AnalyticDB for mysql - it is designed as a lakehouse with similar performance to ClickHouse (that means you can use a single database for your datawarehouse architecture). After testint it was proven that AnalyticDB achieved up to 4 million (TPS) transactions per second for load/insert operations.
 
  3. Why do you store locally before importing to mysql?
   This is for debugging purpose. When developing this code I had to ensure that if the instance was distrupted I could resume later, however in hindsight - there is just too much data (about 4 petabytes when stored as .gz).
